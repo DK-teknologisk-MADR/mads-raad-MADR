@@ -98,10 +98,15 @@ class EarlyStopHookBase(HookBase):
 class StopAtIterHook(HookBase):
     def __init__(self,save_name,iter_to_stop):
         super().__init__(save_name)
-        self.iter_to_stop = iter_to_stop
+        self.iter_num = iter_to_stop
+        self.iter = 0
+
+    def after_step(self):
+        self.iter += 1
+        super().after_step()
 
     def stopping_criteria(self):
-        return self.iter_to_stop >= self.trainer.iter
+        return self.iter_num >= self.iter
 
 
 

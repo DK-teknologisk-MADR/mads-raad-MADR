@@ -80,9 +80,3 @@ class SHA(pruner_base):
 
     def get_best_models(self):
         return self.rung_results[self.next_rung]
-
-#TEST FUNCTION
-    def _start(self):
-        done = False
-        while not done:
-            next_trial,pruned,done = self.report_and_get_next_trial(floor(abs(standard_cauchy())))

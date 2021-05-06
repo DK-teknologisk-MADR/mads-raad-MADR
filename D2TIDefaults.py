@@ -1,5 +1,8 @@
 # install dependencies:
 import torch, torchvision
+
+import hooks
+
 assert torch.cuda.is_available(), "torch cant find cuda. Is there GPU on the machine?"
 # opencv is pre-installed on colab
 import detectron2
@@ -15,6 +18,7 @@ from detectron2.data import  transforms as T
 import matplotlib.pyplot as plt
 from copy import deepcopy
 import json
+from hooks import StopAtIterHook
 from detectron2.data import build_detection_train_loader, build_detection_test_loader
 from detectron2.evaluation import COCOEvaluator, inference_on_dataset
 setup_logger()
@@ -55,7 +59,7 @@ def get_data_dicts(data_dir,split):
     file_pairs= get_file_pairs(data_dir,split)
     dataset_dicts = []
     data_dir_cur = os.path.join(data_dir,split)
-    assert all(len(files)==2 for files in file_pairs.values())
+    assert all(len(files)==2 for files in file_pairs.values() )
     img_id = 0
     for idx,tup in enumerate(file_pairs.items()):
         name, files = tup
@@ -139,13 +143,13 @@ class D2_hyperopt_Base():
       max_epoch : maximum TOTAL number of iters across all tried models. WARNING: Persistent memory needed is proportional to this.
       pruner_cls : class(not object) of a pruner. see pruner class
     '''
-    def __init__(self, model_dict,data_names, task,evaluator, super_step_size=30,
-                 output_dir = ".", max_epochs = 90,
+    def __init__(self, model_dict,data_names, task,evaluator, step_chunk_size=30,
+                 output_dir = ".", max_iter = 90,
                  trainer_cls = DefaultTrainer,
                  pruner_cls = SHA,
                  pr_params = {}):
         print("I HAVE STARTED")
-        self.super_step_size = super_step_size
+        self.step_chunk_size = step_chunk_size
         self.model_name=model_dict['name']
         self.model_dict = model_dict
         self.task = task
@@ -155,25 +159,49 @@ class D2_hyperopt_Base():
         self.suggested_params = []
         self.output_dir=output_dir
         self.evaluator = evaluator
-        self.pruner = pruner_cls(max_epochs // self.super_step_size,**pr_params)
+        self.pruner = pruner_cls(max_iter // self.step_chunk_size, **pr_params)
+        class TrainerWithHook(trainer_cls):
+            def __init__(self,iter,*args,**kwargs):
+                super().__init__(*args,**kwargs)
+                self.iter = iter
+
+            def build_hooks(self):
+                res = super().build_hooks()
+                hook = StopAtIterHook(f"{self.trial_id}_stop_at_{self.iter}", self.iter)
+                res.append(hook)
+        self.trainer_cls = TrainerWithHook
+
     # parameters end
+
+
 
     def initialize(self):
         raise NotImplementedError
 
+    # TODO:complete with all types
+    def suggest_values(self, typ, params):
+        '''
+        MEANT TO BE SUBCLASSED AND SHADOWED.
+        input: (typ,params)
+        structure:
+        if/elif chain of if typ == "example_type":
+            sample and return sample
+        output: sample of structure corresponding to typ
+        '''
+        raise NotImplementedError
 
     def get_model_name(self,trial_id):
         return f'{self.model_name}_{trial_id}'
 
-    def load_from_cfg_and_train(self,cfg,res):
+
+    def load_from_cfg(self,cfg,res):
         '''
         load a model specified by cfg and train
         '''
-        cfg.SOLVER.MAX_ITER += self.super_step_size*res
+        #cfg.SOLVER.MAX_ITER += self.super_step_size*res
         os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
-        trainer=self.trainer_cls(cfg)
-        trainer.resume_or_load(resume=True)
-        trainer.train()
+        trainer = self.trainer_cls(res * self.step_chunk_size, cfg)
+        trainer.resume_or_load(resume= True)
         return trainer
 
     def validate(self,cfg_sg,trainer):
@@ -223,25 +251,31 @@ class D2_hyperopt_Base():
 
 
     def sprint(self,trial_id,res,cfg_sg):
-      try:
-        trainer = self.load_from_cfg_and_train(cfg_sg,res)
-      except:
-        print("Bad_model")
-        val_to_report = 0
-      else:
-        val_to_report = self.validate(cfg_sg,trainer)
+        trainer = self.load_from_cfg(cfg_sg, res)
+        try:
+            trainer.train()
+        except hooks.StopFakeExc:
+            print("Stopped per request of hook")
+            val_to_report = self.validate(cfg_sg,trainer)
+        except:
+            print("Bad_model")
+            val_to_report = 0
+        else:
+            val_to_report = self.validate(cfg_sg,trainer)
         return val_to_report
 
 
     def start(self):
-      self.initialize()
-      id_cur = 0
-      done = False
-      while not done:
-        cfg = self.suggested_cfgs[id_cur]
-        val_to_report = self.sprint(id_cur,self.pruner.get_cur_res(),cfg)
-        id_cur, pruned, done = self.pruner.report_and_get_next_trial(val_to_report)
-        self._prune_handling(pruned)
+        for i in range(self.pruner.participants):
+            suggested_cfg,params = self.suggest_cfg(i)
+            self.initialize()
+        id_cur = 0
+        done = False
+        while not done:
+            cfg = self.suggested_cfgs[id_cur]
+            val_to_report = self.sprint(id_cur,self.pruner.get_cur_res(),cfg)
+            id_cur, pruned, done = self.pruner.report_and_get_next_trial(val_to_report)
+            self._prune_handling(pruned)
 
     def before_pruned(self,pruned_ids):
         pass
@@ -250,15 +284,3 @@ class D2_hyperopt_Base():
         self.before_pruned(pruned_ids)
 #        shutil.rmtree(cfg.OUTPUT_DIR)
         return
-
-#TODO:complete with all types
-    def suggest_values(self,typ,params):
-        '''
-        MEANT TO BE SUBCLASSED AND SHADOWED.
-        input: (typ,params)
-        structure:
-        if/elif chain of if typ == "example_type":
-            sample and return sample
-        output: sample of structure corresponding to typ
-        '''
-        raise NotImplementedError

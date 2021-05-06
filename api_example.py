@@ -16,7 +16,6 @@ data_dir = "/pers_files/Filet/annotations/Combined/1024x1024"
 COCO_dicts = {split: get_data_dicts(data_dir,split) for split in splits }
 data_names = register_data('filet',['train','val'],COCO_dicts,{'thing_classes' : ['filet']})
 
-
 def initialize_base_cfg(model_name="",cfg=None):
     '''
     setup base configuration of model SEE MORE AT https://detectron2.readthedocs.io/en/latest/modules/config.html
@@ -67,8 +66,6 @@ class D2_hyperopt(D2_hyperopt_Base):
         print('task is',self.task)
 
     def initialize(self):
-        for i in range(self.pruner.participants):
-            suggested_cfg, params = self.suggest_cfg(i)
             os.makedirs(suggested_cfg.OUTPUT_DIR, exist_ok=True)
             to_json = [suggested_cfg, params]
             with open(f'{suggested_cfg.OUTPUT_DIR}/params.json', 'w') as fp:
@@ -84,8 +81,9 @@ class D2_hyperopt(D2_hyperopt_Base):
        # elif typ == "categorical":
         #    return choice(**params_wo_name)
 
+cfg = initialize_base_cfg(model_name)
 task = 'bbox'
-evaluator = COCOEvaluator(data_names['val'],('bbox','segm'), False,output_dir="./output/")
+evaluator = COCOEvaluator(data_names['val'],('bbox','segm'), False,cfg.OUTPUT_DIR)
 
 #hyperoptimization object that uses model_dict to use correct model, and get all hyper-parameters.
 #optimized after "task" as computed by "evaluator". The pruner is (default) SHA, with passed params pr_params.
@@ -102,25 +100,38 @@ class TrainerWithMapper(DefaultTrainer):
     Example of a trainer that applies argumentations at runtime. Argumentations available can be found here:
     https://detectron2.readthedocs.io/en/latest/modules/data_transforms.html
     '''
-    def __init__(self,cfg,**params_to_DefaultTrainer):
-        super().__init__(cfg,**params_to_DefaultTrainer)
+    def __init__(self,augmentations,**params_to_DefaultTrainer):
+        super().__init__(**params_to_DefaultTrainer)
+        self.augmentations=augmentations
+
     #overwrites default build_train_loader
     @classmethod
     def build_train_loader(cls, cfg):
-          mapper = DatasetMapper(cfg, is_train=True, augmentations=[
+          mapper = DatasetMapper(cfg, is_train=True, augmentations=augmentations)
+          return build_detection_train_loader(cfg,mapper=mapper)
+augmentations = [
           T.RandomCrop('relative_range',[0.7,0.7]),
           T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
           T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
           T.RandomRotation(angle = [-20,20], expand=True, center=None, sample_style='range'),
           T.RandomBrightness(0.85,1.15)
-              ])
-          return build_detection_train_loader(cfg,mapper=mapper)
+              ]
 
-
-cfg = initialize_base_cfg(model_name)
-trainer = TrainerWithMapper(cfg)
+trainer = TrainerWithMapper(augmentations = augmentations,cfg=cfg)
 trainer.resume_or_load(resume=True)
 trainer.train()
+
+--------------------------------------------
+#example of training with periodic evaluation
+cfg.DATASETS.TEST = (data_names['val'],)
+cfg.TEST.EVAL_PERIOD = 10
+class TrainerWithEval(TrainerWithMapper):
+
+    @classmethod
+    def build_evaluator(cls,cfg,dataset_name,output_folder=None):
+        if output_folder is None
+            output_folder = cfg.OUTPUT_DIR
+        return COCOEvaluator(dataset_name, ('bbox', 'segm'), False, output_dir=output_folder)
 
 #if argumentations are not neccesary, one does not need subclass
 #trainer = TrainerWithMapper(cfg)
