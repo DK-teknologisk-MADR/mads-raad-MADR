@@ -55,6 +55,7 @@ class early_stop_hook_base(HookBase):
                 self._handle_stop()
 
 
+
 class EarlyStopHookBase(HookBase):
     '''
     IMPORTANT: Stops through raising StopFakeExc so train should be run in try/exc env
@@ -107,12 +108,6 @@ class StopAtIterHook(HookBase):
 
     def stopping_criteria(self):
         return self.iter_num >= self.iter
-
-
-
-
-#class EarlyStopHook(EarlyStopHookBase):
-
 
 
 ##early_stop_trainer(DefaultTrainer)
